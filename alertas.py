@@ -6,11 +6,13 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime, timezone
 from dotenv import load_dotenv
+from scipy.signal import argrelextrema
+import numpy as np
 
 # ================== CONFIG ==================
 SYMBOL = 'BTC/USDT'
 TIMEFRAME = '5m'
-LIMIT = 200
+LIMIT = 300
 CSV_PATH = 'divergencias.csv'
 TRADINGVIEW_LINK = 'https://www.tradingview.com/chart/?symbol=BINANCE:BTCUSDT&interval=5'
 SLEEP_SECONDS = 20
@@ -51,54 +53,63 @@ def calcular_rsi(series: pd.Series, length=14):
 
 def obtener_df():
     ohlcv = exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=LIMIT)
-    df = pd.DataFrame(ohlcv, columns=['time', 'open', 'high', 'low', 'close', 'volume'])
+    df = pd.DataFrame(ohlcv, columns=['time','open','high','low','close','volume'])
     df['rsi'] = calcular_rsi(df['close'])
     return df.dropna()
 
-def detectar_divergencia_rsi(df, lookback=5):
+def detectar_divergencia_real(df, order=5):
+    """Detecta divergencias RSI reales tipo visual (Bull/Bear)."""
+    close = df['close'].values
+    rsi = df['rsi'].values
+
+    # Encuentra los últimos 2 mínimos y máximos locales
+    lows = argrelextrema(close, np.less_equal, order=order)[0]
+    highs = argrelextrema(close, np.greater_equal, order=order)[0]
+
+    tipo = None
+    idx1 = idx2 = None
+
+    # --- Divergencia alcista (Bull): precio hace mínimo más bajo, RSI sube ---
+    if len(lows) >= 2:
+        idx1, idx2 = lows[-2], lows[-1]
+        if close[idx2] < close[idx1] and rsi[idx2] > rsi[idx1]:
+            tipo = "Bullish"
+
+    # --- Divergencia bajista (Bear): precio hace máximo más alto, RSI baja ---
+    if len(highs) >= 2:
+        h1, h2 = highs[-2], highs[-1]
+        if close[h2] > close[h1] and rsi[h2] < rsi[h1]:
+            tipo = "Bearish"
+            idx1, idx2 = h1, h2
+
+    return tipo, idx1, idx2
+
+def graficar_divergencia_real(df, tipo, idx1, idx2):
     close = df['close']
     rsi = df['rsi']
-
-    max_price_prev = close.iloc[-(lookback+1):-1].max()
-    min_price_prev = close.iloc[-(lookback+1):-1].min()
-    max_rsi_prev = rsi.iloc[-(lookback+1):-1].max()
-    min_rsi_prev = rsi.iloc[-(lookback+1):-1].min()
-    last_price = close.iloc[-1]
-    last_rsi = rsi.iloc[-1]
-
-    div_bajista = (last_price > max_price_prev) and (last_rsi < max_rsi_prev)
-    div_alcista = (last_price < min_price_prev) and (last_rsi > min_rsi_prev)
-    return div_alcista, div_bajista
-
-def graficar_divergencia(df, tipo, lookback=5):
-    close = df['close']
-    rsi = df['rsi']
-    last_idx = len(df) - 1
-    prev_idx = len(df) - (lookback + 1)
+    color = 'green' if tipo == "Bullish" else 'red'
+    label = 'Bull' if tipo == "Bullish" else 'Bear'
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
-    fig.suptitle(f"{tipo} en {SYMBOL} ({TIMEFRAME})", fontsize=12, fontweight='bold')
+    fig.suptitle(f"Divergencia {label} en {SYMBOL} ({TIMEFRAME})", fontsize=12, fontweight='bold')
 
     # --- Precio ---
     ax1.plot(close, color='orange', label='Precio')
-    ax1.set_ylabel('Precio (USDT)')
+    ax1.plot([idx1, idx2], [close.iloc[idx1], close.iloc[idx2]], color=color, linestyle='--', linewidth=2)
+    ax1.text(idx2, close.iloc[idx2], label, color='white', fontsize=9,
+             bbox=dict(facecolor=color, alpha=0.8, boxstyle="round,pad=0.3"))
     ax1.grid(True, alpha=0.3)
     ax1.legend(loc='upper left')
 
     # --- RSI ---
     ax2.plot(rsi, color='blue', label='RSI (14)')
+    ax2.plot([idx1, idx2], [rsi.iloc[idx1], rsi.iloc[idx2]], color=color, linewidth=2)
     ax2.axhline(70, color='red', linestyle='--', linewidth=0.8)
     ax2.axhline(30, color='green', linestyle='--', linewidth=0.8)
-    ax2.set_ylabel('RSI')
     ax2.grid(True, alpha=0.3)
-
-    # --- Líneas de divergencia ---
-    color = 'green' if 'Alcista' in tipo else 'red'
-    ax2.plot([prev_idx, last_idx], [rsi.iloc[prev_idx], rsi.iloc[last_idx]], color=color, linewidth=2)
-    ax1.plot([prev_idx, last_idx], [close.iloc[prev_idx], close.iloc[last_idx]], color=color, linestyle='--', linewidth=1.5)
-
     ax2.legend(loc='upper left')
     plt.tight_layout()
+
     path = 'grafico.png'
     plt.savefig(path)
     plt.close(fig)
@@ -111,45 +122,39 @@ def guardar_csv(data):
 
 # ================== LOOP PRINCIPAL ==================
 def main():
-    enviar_telegram_texto(f"🤖 Bot de divergencias iniciado — monitoreando <b>{SYMBOL}</b> ({TIMEFRAME})")
-    last_candle = None
+    enviar_telegram_texto(f"🤖 Bot de divergencias RSI reales iniciado — monitoreando <b>{SYMBOL}</b> ({TIMEFRAME})")
+    last_signal_time = None
 
     while True:
         try:
             df = obtener_df()
-            current_time = int(df.iloc[-1]['time'])
+            tipo, idx1, idx2 = detectar_divergencia_real(df)
 
-            if last_candle is None:
-                last_candle = current_time
-            elif current_time != last_candle:
-                div_alcista, div_bajista = detectar_divergencia_rsi(df)
-                if div_alcista or div_bajista:
-                    tipo = "📈 Divergencia RSI Alcista" if div_alcista else "📉 Divergencia RSI Bajista"
-                    precio = df.iloc[-1]['close']
-                    hora = fmt_ts(current_time)
-                    rsi = df.iloc[-1]['rsi']
+            if tipo and (last_signal_time != df.iloc[idx2]['time']):
+                hora = fmt_ts(df.iloc[idx2]['time'])
+                precio = df.iloc[idx2]['close']
+                rsi_val = df.iloc[idx2]['rsi']
 
-                    path_img = graficar_divergencia(df, tipo)
-                    mensaje = (
-                        f"{tipo} detectada en <b>{SYMBOL}</b>\n"
-                        f"🕒 {hora}\n"
-                        f"💰 Precio: <b>{precio:.2f}</b>\n"
-                        f"🧪 RSI: <b>{rsi:.1f}</b>\n"
-                        f"🔗 <a href='{TRADINGVIEW_LINK}'>Ver en TradingView</a>"
-                    )
+                path_img = graficar_divergencia_real(df, tipo, idx1, idx2)
+                mensaje = (
+                    f"{'📈' if tipo == 'Bullish' else '📉'} Divergencia RSI {tipo} detectada en <b>{SYMBOL}</b>\n"
+                    f"🕒 {hora}\n"
+                    f"💰 Precio: <b>{precio:.2f}</b>\n"
+                    f"🧪 RSI: <b>{rsi_val:.1f}</b>\n"
+                    f"🔗 <a href='{TRADINGVIEW_LINK}'>Ver en TradingView</a>"
+                )
 
-                    enviar_telegram_foto(mensaje, path_img)
-                    guardar_csv({
-                        'timestamp_utc': hora,
-                        'symbol': SYMBOL,
-                        'timeframe': TIMEFRAME,
-                        'tipo': tipo,
-                        'precio': round(float(precio), 2),
-                        'rsi': round(float(rsi), 2)
-                    })
-                    print(f"[ALERTA] {tipo} enviada a Telegram")
-
-                last_candle = current_time
+                enviar_telegram_foto(mensaje, path_img)
+                guardar_csv({
+                    'timestamp_utc': hora,
+                    'symbol': SYMBOL,
+                    'timeframe': TIMEFRAME,
+                    'tipo': tipo,
+                    'precio': round(float(precio), 2),
+                    'rsi': round(float(rsi_val), 2)
+                })
+                print(f"[ALERTA] Divergencia {tipo} enviada.")
+                last_signal_time = df.iloc[idx2]['time']
 
             time.sleep(SLEEP_SECONDS)
 
