@@ -2,3 +2,4 @@ ccxt
 pandas
 python-dotenv
 requests
+matplotlib
