@@ -1,7 +1,6 @@
 import os
 import time
 import requests
-import threading
 import ccxt
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -71,20 +70,38 @@ def detectar_divergencia_rsi(df, lookback=5):
     div_alcista = (last_price < min_price_prev) and (last_rsi > min_rsi_prev)
     return div_alcista, div_bajista
 
-def graficar_divergencia(df, tipo):
-    plt.figure(figsize=(8, 5))
-    plt.title(f'{tipo} en {SYMBOL} ({TIMEFRAME})')
-    plt.plot(df['close'], label='Precio', color='orange')
-    plt.ylabel('Precio')
-    plt.twinx()
-    plt.plot(df['rsi'], label='RSI', color='blue', alpha=0.7)
-    plt.axhline(70, color='red', linestyle='--', linewidth=0.8)
-    plt.axhline(30, color='green', linestyle='--', linewidth=0.8)
-    plt.legend(loc='upper left')
+def graficar_divergencia(df, tipo, lookback=5):
+    close = df['close']
+    rsi = df['rsi']
+    last_idx = len(df) - 1
+    prev_idx = len(df) - (lookback + 1)
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
+    fig.suptitle(f"{tipo} en {SYMBOL} ({TIMEFRAME})", fontsize=12, fontweight='bold')
+
+    # --- Precio ---
+    ax1.plot(close, color='orange', label='Precio')
+    ax1.set_ylabel('Precio (USDT)')
+    ax1.grid(True, alpha=0.3)
+    ax1.legend(loc='upper left')
+
+    # --- RSI ---
+    ax2.plot(rsi, color='blue', label='RSI (14)')
+    ax2.axhline(70, color='red', linestyle='--', linewidth=0.8)
+    ax2.axhline(30, color='green', linestyle='--', linewidth=0.8)
+    ax2.set_ylabel('RSI')
+    ax2.grid(True, alpha=0.3)
+
+    # --- Líneas de divergencia ---
+    color = 'green' if 'Alcista' in tipo else 'red'
+    ax2.plot([prev_idx, last_idx], [rsi.iloc[prev_idx], rsi.iloc[last_idx]], color=color, linewidth=2)
+    ax1.plot([prev_idx, last_idx], [close.iloc[prev_idx], close.iloc[last_idx]], color=color, linestyle='--', linewidth=1.5)
+
+    ax2.legend(loc='upper left')
     plt.tight_layout()
     path = 'grafico.png'
     plt.savefig(path)
-    plt.close()
+    plt.close(fig)
     return path
 
 def guardar_csv(data):
