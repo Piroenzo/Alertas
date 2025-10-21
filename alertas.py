@@ -17,7 +17,7 @@ TIMEFRAME = "5m"
 RSI_PERIOD = 14
 
 # === CONEXIÓN BINANCE (pública) ===
-exchange = ccxt.binance({"enableRateLimit": True})
+exchange = ccxt.bingx({"enableRateLimit": True})
 
 def enviar_alerta(texto, image_bytes=None):
     """Envía texto o imagen al canal de Telegram."""
